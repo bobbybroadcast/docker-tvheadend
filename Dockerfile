@@ -149,6 +149,8 @@ RUN \
  cp /usr/include/gnu-libiconv/iconv.h /usr/include/iconv.h && \
  echo "**** build tvheadend ****" && \
  git clone -b ${TVH_VER} --single-branch https://github.com/tvheadend/tvheadend.git /tmp/tvheadend && \
+ echo "**** apply atsc-cablecard patches ****" && \
+ patch -p1 -i /tmp/patches/atsc-cablecard.patch -d /tmp/tvheadend && \
  cd /tmp/tvheadend && \
  ./configure \
 	--disable-avahi \
@@ -229,8 +231,8 @@ RUN \
 # copy local files
 COPY root/ /
 
-# add picons
-ADD picons.tar.bz2 /picons
+# removed, using http://schedulesdirect.org icons instead
+# ADD picons.tar.bz2 /picons
 
 # ports and volumes
 EXPOSE 9981 9982

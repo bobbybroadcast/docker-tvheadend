@@ -1,0 +1,452 @@
+diff --git a/src/input/mpegts/dvb.h b/src/input/mpegts/dvb.h
+index 3dae001bd..a14c58678 100644
+--- a/src/input/mpegts/dvb.h
++++ b/src/input/mpegts/dvb.h
+@@ -599,12 +599,19 @@ typedef struct dvb_isdbt_config {
+   } layers[3];
+ } dvb_isdbt_config_t;
+ 
++typedef struct dvb_fe_vchan {
++	uint32_t	num;
++	uint16_t	minor;
++	char	   *name;
++} dvb_fe_vchan_t;
++
+ typedef struct dvb_mux_conf
+ {
+   dvb_fe_type_t               dmc_fe_type;
+   dvb_fe_delivery_system_t    dmc_fe_delsys;
+   dvb_fe_modulation_t         dmc_fe_modulation;
+   uint32_t                    dmc_fe_freq;
++  dvb_fe_vchan_t	          dmc_fe_vchan;
+   dvb_fe_spectral_inversion_t dmc_fe_inversion;
+   dvb_fe_rolloff_t            dmc_fe_rolloff;
+   dvb_fe_pilot_t              dmc_fe_pilot;
+diff --git a/src/input/mpegts/dvb_support.c b/src/input/mpegts/dvb_support.c
+index 569d209e4..4a606f2c2 100644
+--- a/src/input/mpegts/dvb_support.c
++++ b/src/input/mpegts/dvb_support.c
+@@ -1105,9 +1105,27 @@ dvb_mux_conf_str_isdb_t ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+            dmc->u.dmc_fe_isdbt.layers[2].time_interleaving);
+ }
+ 
++static int
++dvb_mux_conf_str_vchan(dvb_mux_conf_t *dmc, char *buf, size_t bufsize)
++{
++	if (!dmc->dmc_fe_vchan.minor)
++		return snprintf(buf, bufsize,
++		  "%s channel %u",
++		  dvb_type2str(dmc->dmc_fe_type),
++		  dmc->dmc_fe_vchan.num);
++	else
++		return snprintf(buf, bufsize,
++		  "%s channel %u.%u",
++		  dvb_type2str(dmc->dmc_fe_type),
++		  dmc->dmc_fe_vchan.num,
++		  dmc->dmc_fe_vchan.minor);
++}
++
+ int
+ dvb_mux_conf_str ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+ {
++	if (dmc->dmc_fe_vchan.num)
++		return dvb_mux_conf_str_vchan(dmc, buf, bufsize);
+   switch (dmc->dmc_fe_type) {
+   case DVB_TYPE_NONE:
+     return
+diff --git a/src/input/mpegts/mpegts_mux_dvb.c b/src/input/mpegts/mpegts_mux_dvb.c
+index 134098fc8..4173d869f 100644
+--- a/src/input/mpegts/mpegts_mux_dvb.c
++++ b/src/input/mpegts/mpegts_mux_dvb.c
+@@ -532,6 +532,38 @@ dvb_mux_atsc_t_class_delsys_enum (void *o, const char *lang)
+   return list;
+ }
+ 
++static const void *
++dvb_mux_class_vchan_get(void *o)
++{
++	dvb_mux_t *lm = (dvb_mux_t *)o;
++	if (!lm->lm_tuning.dmc_fe_vchan.minor)
++		snprintf(prop_sbuf, PROP_SBUF_LEN, "%u",
++		  lm->lm_tuning.dmc_fe_vchan.num);
++	else
++		snprintf(prop_sbuf, PROP_SBUF_LEN, "%u.%u",
++		  lm->lm_tuning.dmc_fe_vchan.num,
++		  lm->lm_tuning.dmc_fe_vchan.minor);
++	return &prop_sbuf_ptr;
++}
++
++static int
++dvb_mux_class_vchan_set(void *o, const void *v)
++{
++	dvb_mux_t *lm = (dvb_mux_t *)o;
++	int r;
++
++	r = sscanf(v, "%u%*[.-]%hu",
++	  &lm->lm_tuning.dmc_fe_vchan.num,
++	  &lm->lm_tuning.dmc_fe_vchan.minor);
++	switch (r) {
++	case 0:
++		return 1;
++	case 1:
++		lm->lm_tuning.dmc_fe_vchan.minor = 0;
++	}
++	return 0;
++}
++
+ dvb_mux_class_R(atsc_t, modulation, qam, qam,
+                      DVB_MOD_QAM_AUTO, DVB_MOD_QAM_256, DVB_MOD_VSB_8);
+ 
+@@ -557,6 +589,35 @@ const idclass_t dvb_mux_atsc_t_class =
+       MUX_PROP_STR("modulation", N_("Modulation"), atsc_t, qam, N_("AUTO")),
+       .desc     = N_("The modulation used on the mux."),
+     },
++    {
++		.type	= PT_STR,
++		.id	    = "vch",
++		.name	= N_("Virtual channel"),
++		.get	= dvb_mux_class_vchan_get,
++		.set	= dvb_mux_class_vchan_set,
++		.opts	= PO_ADVANCED,
++	},
++	{
++		.type	= PT_U32,
++		.id	    = "vch_num",
++		.name	= N_("Virtual channel number"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.num),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
++	{
++		.type	= PT_U16,
++		.id	    = "vch_minor",
++		.name	= N_("Virtual channel (minor)"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.minor),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
++	{
++		.type	= PT_STR,
++		.id	    = "vch_name",
++		.name	= N_("Virtual channel name"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.name),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
+     {}
+   }
+ };
+@@ -610,6 +671,35 @@ const idclass_t dvb_mux_atsc_c_class =
+       MUX_PROP_STR("fec", N_("FEC"), dvbc, fec, N_("AUTO")),
+       .desc     = N_("The forward error correction used on the mux."),
+     },
++    {
++		.type	= PT_STR,
++		.id	    = "vch",
++		.name	= N_("Virtual channel"),
++		.get	= dvb_mux_class_vchan_get,
++		.set	= dvb_mux_class_vchan_set,
++		.opts	= PO_ADVANCED,
++	},
++	{
++		.type	= PT_U32,
++		.id	    = "vch_num",
++		.name	= N_("Virtual channel number"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.num),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
++	{
++		.type	= PT_U16,
++		.id	    = "vch_minor",
++		.name	= N_("Virtual channel (minor)"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.minor),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
++	{
++		.type	= PT_STR,
++		.id	    = "vch_name",
++		.name	= N_("Virtual channel name"),
++		.off	= offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.name),
++		.opts	= PO_RDONLY | PO_NOSAVE,
++	},
+     {}
+   }
+ };
+@@ -910,29 +1000,40 @@ static void
+ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
+ {
+   dvb_mux_t *lm = (dvb_mux_t*)mm;
+-  dvb_network_t *ln = (dvb_network_t*)mm->mm_network;
+-  uint32_t freq = lm->lm_tuning.dmc_fe_freq, freq2;
+-  char extra[8], buf2[5], *p;
+-  if (ln->ln_type == DVB_TYPE_S) {
+-    const char *s = dvb_pol2str(lm->lm_tuning.u.dmc_fe_qpsk.polarisation);
+-    if (s) extra[0] = *s;
+-    extra[1] = '\0';
++
++  if (lm->lm_tuning.dmc_fe_vchan.num) {
++	if (!lm->lm_tuning.dmc_fe_vchan.minor)
++		snprintf(buf, len, "%u",
++		  lm->lm_tuning.dmc_fe_vchan.num);
++	else
++		snprintf(buf, len, "%u.%u",
++		  lm->lm_tuning.dmc_fe_vchan.num,
++		  lm->lm_tuning.dmc_fe_vchan.minor);
+   } else {
++    dvb_network_t *ln = (dvb_network_t*)mm->mm_network;
++    uint32_t freq = lm->lm_tuning.dmc_fe_freq, freq2;
++    char extra[8], buf2[5], *p;
++    if (ln->ln_type == DVB_TYPE_S) {
++      const char *s = dvb_pol2str(lm->lm_tuning.u.dmc_fe_qpsk.polarisation);
++      if (s) extra[0] = *s;
++      extra[1] = '\0';
++    } else {
++      freq /= 1000;
++      strcpy(extra, "MHz");
++    }
++    freq2 = freq % 1000;
+     freq /= 1000;
+-    strcpy(extra, "MHz");
+-  }
+-  freq2 = freq % 1000;
+-  freq /= 1000;
+-  snprintf(buf2, sizeof(buf2), "%03d", freq2);
+-  p = buf2 + 2;
+-  while (freq2 && (freq2 % 10) == 0) {
+-    freq2 /= 10;
+-    *(p--) = '\0';
++    snprintf(buf2, sizeof(buf2), "%03d", freq2);
++    p = buf2 + 2;
++    while (freq2 && (freq2 % 10) == 0) {
++      freq2 /= 10;
++      *(p--) = '\0';
++    }
++    if (freq2)
++      snprintf(buf, len, "%d.%s%s", freq, buf2, extra);
++    else
++      snprintf(buf, len, "%d%s", freq, extra);
+   }
+-  if (freq2)
+-    snprintf(buf, len, "%d.%s%s", freq, buf2, extra);
+-  else
+-    snprintf(buf, len, "%d%s", freq, extra);
+ }
+ 
+ static void
+diff --git a/src/input/mpegts/mpegts_network_dvb.c b/src/input/mpegts/mpegts_network_dvb.c
+index 0efe6ffe5..29401ae2e 100644
+--- a/src/input/mpegts/mpegts_network_dvb.c
++++ b/src/input/mpegts/mpegts_network_dvb.c
+@@ -792,10 +792,24 @@ noop:
+ }
+ 
+ static mpegts_service_t *
+-dvb_network_create_service
+-  ( mpegts_mux_t *mm, uint16_t sid, uint16_t pmt_pid )
++dvb_network_create_service(mpegts_mux_t *mm, uint16_t sid, uint16_t pmt_pid)
+ {
+-  return mpegts_service_create1(NULL, mm, sid, pmt_pid, NULL);
++	dvb_mux_t	        *lm = (dvb_mux_t *)mm;
++	mpegts_network_t	*ln = mm->mm_network;
++	mpegts_service_t	*s;
++
++	s = mpegts_service_create1(NULL, mm, sid, pmt_pid, NULL);
++	if (lm->lm_tuning.dmc_fe_vchan.num) {
++		if (!s->s_dvb_provider && ln->mn_provider_network_name)
++			s->s_dvb_provider = strdup(ln->mn_provider_network_name);
++		if (!s->s_dvb_channel_num)
++			s->s_dvb_channel_num = lm->lm_tuning.dmc_fe_vchan.num;
++		if (!s->s_dvb_channel_minor && lm->lm_tuning.dmc_fe_vchan.minor)
++			s->s_dvb_channel_minor = lm->lm_tuning.dmc_fe_vchan.minor;
++		if (!s->s_dvb_svcname && lm->lm_tuning.dmc_fe_vchan.name)
++			s->s_dvb_svcname = lm->lm_tuning.dmc_fe_vchan.name;
++	}
++	return s;
+ }
+ 
+ static mpegts_mux_t *
+diff --git a/src/input/mpegts/tvhdhomerun/tvhdhomerun.c b/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
+index 47740a4a0..1d824e7fc 100644
+--- a/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
++++ b/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
+@@ -323,6 +323,8 @@ static void tvhdhomerun_device_create(struct hdhomerun_discover_device_t *dInfo)
+   } else {
+     if (strstr(hd->hd_info.deviceModel, "_atsc"))
+       type = DVB_TYPE_ATSC_T;
++    if (strstr(hd->hd_info.deviceModel, "_cablecard"))
++      type = DVB_TYPE_ATSC_C;
+   }
+ 
+   hd->hd_override_type = strdup(dvb_type2str(type));
+diff --git a/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c b/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
+index 20ca3492c..5ce20a927 100644
+--- a/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
++++ b/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
+@@ -254,6 +254,18 @@ tvhdhomerun_frontend_monitor_cb( void *aux )
+       tvhdebug(LS_TVHDHOMERUN, "locked");
+       hfe->hf_locked = 1;
+ 
++      /* Set vchan.name from status */
++      dvb_mux_t *lm = (dvb_mux_t *)mm;
++      struct hdhomerun_tuner_vstatus_t tuner_vstatus;
++      char *tuner_vstatus_str;
++      pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
++      res = hdhomerun_device_get_tuner_vstatus(hfe->hf_hdhomerun_tuner,
++        &tuner_vstatus_str, &tuner_vstatus);
++      pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
++      if (res < 1)
++        tvhwarn(LS_TVHDHOMERUN, "tuner_vstatus (%d)", res);
++      lm->lm_tuning.dmc_fe_vchan.name = strdup(tuner_vstatus.name);
++
+       /* start input thread */
+       tvh_pipe(O_NONBLOCK, &hfe->hf_input_thread_pipe);
+       pthread_mutex_lock(&hfe->hf_input_thread_mutex);
+@@ -366,56 +378,63 @@ static int tvhdhomerun_frontend_tune(tvhdhomerun_frontend_t *hfe, mpegts_mux_ins
+   int res;
+   char *perror;
+ 
+-  /* resolve the modulation type */
+-  switch (dmc->dmc_fe_type) {
+-    case DVB_TYPE_C:
+-      /* the symbol rate */
+-      symbol_rate = dmc->u.dmc_fe_qam.symbol_rate / 1000;
+-      switch(dmc->dmc_fe_modulation) {
+-        case DVB_MOD_QAM_64:
+-          snprintf(channel_buf, sizeof(channel_buf), "a8qam64-%d:%u", symbol_rate, dmc->dmc_fe_freq);
+-          break;
+-        case DVB_MOD_QAM_256:
+-          snprintf(channel_buf, sizeof(channel_buf), "a8qam256-%d:%u", symbol_rate, dmc->dmc_fe_freq);
+-          break;
+-        default:
+-          snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
+-          break;
+-      }
+-      break;
+-    case DVB_TYPE_T:
+-      bandwidth = dmc->u.dmc_fe_ofdm.bandwidth / 1000UL;
+-      switch (dmc->dmc_fe_modulation) {
+-        case DVB_MOD_AUTO:
+-            if (dmc->u.dmc_fe_ofdm.bandwidth == DVB_BANDWIDTH_AUTO) {
+-                snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
+-            } else {
+-                snprintf(channel_buf, sizeof(channel_buf), "auto%dt:%u", bandwidth, dmc->dmc_fe_freq);
+-            }
+-            break;
+-        case DVB_MOD_QAM_256:
+-            if (dmc->dmc_fe_delsys == DVB_SYS_DVBT2) {
+-                snprintf(channel_buf, sizeof(channel_buf), "tt%dqam256:%u", bandwidth, dmc->dmc_fe_freq);
+-            } else {
+-                snprintf(channel_buf, sizeof(channel_buf), "t%dqam256:%u", bandwidth, dmc->dmc_fe_freq);
+-            }
++  if (dmc->dmc_fe_vchan.num) {
++    if (!dmc->dmc_fe_vchan.minor)
++      snprintf(channel_buf, sizeof(channel_buf), "%u", dmc->dmc_fe_vchan.num);
++    else
++      snprintf(channel_buf, sizeof(channel_buf), "%u.%u", dmc->dmc_fe_vchan.num, dmc->dmc_fe_vchan.minor);
++  } else {
++    /* resolve the modulation type */
++    switch (dmc->dmc_fe_type) {
++      case DVB_TYPE_C:
++        /* the symbol rate */
++        symbol_rate = dmc->u.dmc_fe_qam.symbol_rate / 1000;
++        switch(dmc->dmc_fe_modulation) {
++          case DVB_MOD_QAM_64:
++            snprintf(channel_buf, sizeof(channel_buf), "a8qam64-%d:%u", symbol_rate, dmc->dmc_fe_freq);
+             break;
+-        case DVB_MOD_QAM_64:
+-            if (dmc->dmc_fe_delsys == DVB_SYS_DVBT2) {
+-                snprintf(channel_buf, sizeof(channel_buf), "tt%dqam64:%u", bandwidth, dmc->dmc_fe_freq);
+-            } else {
+-                snprintf(channel_buf, sizeof(channel_buf), "t%dqam64:%u", bandwidth, dmc->dmc_fe_freq);
+-            }
++          case DVB_MOD_QAM_256:
++            snprintf(channel_buf, sizeof(channel_buf), "a8qam256-%d:%u", symbol_rate, dmc->dmc_fe_freq);
+             break;
+-        default:
+-            /* probably won't work but never mind */
++          default:
+             snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
+             break;
+-      }
+-      break;
+-    default:
+-      snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
+-      break;
++        }
++        break;
++      case DVB_TYPE_T:
++        bandwidth = dmc->u.dmc_fe_ofdm.bandwidth / 1000UL;
++        switch (dmc->dmc_fe_modulation) {
++          case DVB_MOD_AUTO:
++              if (dmc->u.dmc_fe_ofdm.bandwidth == DVB_BANDWIDTH_AUTO) {
++                  snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
++              } else {
++                  snprintf(channel_buf, sizeof(channel_buf), "auto%dt:%u", bandwidth, dmc->dmc_fe_freq);
++              }
++              break;
++          case DVB_MOD_QAM_256:
++              if (dmc->dmc_fe_delsys == DVB_SYS_DVBT2) {
++                  snprintf(channel_buf, sizeof(channel_buf), "tt%dqam256:%u", bandwidth, dmc->dmc_fe_freq);
++              } else {
++                  snprintf(channel_buf, sizeof(channel_buf), "t%dqam256:%u", bandwidth, dmc->dmc_fe_freq);
++              }
++              break;
++          case DVB_MOD_QAM_64:
++              if (dmc->dmc_fe_delsys == DVB_SYS_DVBT2) {
++                  snprintf(channel_buf, sizeof(channel_buf), "tt%dqam64:%u", bandwidth, dmc->dmc_fe_freq);
++              } else {
++                  snprintf(channel_buf, sizeof(channel_buf), "t%dqam64:%u", bandwidth, dmc->dmc_fe_freq);
++              }
++              break;
++          default:
++              /* probably won't work but never mind */
++              snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
++              break;
++        }
++        break;
++      default:
++        snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
++        break;
++    }
+   }
+ 
+   tvhinfo(LS_TVHDHOMERUN, "tuning to %s", channel_buf);
+@@ -427,7 +446,10 @@ static int tvhdhomerun_frontend_tune(tvhdhomerun_frontend_t *hfe, mpegts_mux_ins
+     tvherror(LS_TVHDHOMERUN, "failed to acquire lockkey: %s", perror);
+     return SM_CODE_TUNING_FAILED;
+   }
+-  res = hdhomerun_device_set_tuner_channel(hfe->hf_hdhomerun_tuner, channel_buf);
++  if (dmc->dmc_fe_vchan.num)
++    res = hdhomerun_device_set_tuner_vchannel(hfe->hf_hdhomerun_tuner, channel_buf);
++  else
++    res = hdhomerun_device_set_tuner_channel(hfe->hf_hdhomerun_tuner, channel_buf);
+   pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
+   if(res < 1) {
+     tvherror(LS_TVHDHOMERUN, "failed to tune to %s", channel_buf);
+@@ -448,7 +470,8 @@ tvhdhomerun_frontend_start_mux
+   ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
+ {
+   tvhdhomerun_frontend_t *hfe = (tvhdhomerun_frontend_t*)mi;
+-  int res, r;
++  dvb_mux_t *lm = (dvb_mux_t *)mmi->mmi_mux;
++  int res;
+   char buf1[256], buf2[256];
+ 
+   mi->mi_display_name(mi, buf1, sizeof(buf1));
+@@ -459,11 +482,14 @@ tvhdhomerun_frontend_start_mux
+   res = tvhdhomerun_frontend_tune(hfe, mmi);
+ 
+   /* reset the pfilters */
+-  pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
+-  r = hdhomerun_device_set_tuner_filter(hfe->hf_hdhomerun_tuner, "0x0000");
+-  pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
+-  if(r < 1)
+-    tvherror(LS_TVHDHOMERUN, "failed to reset pfilter: %d", r);
++  if (!lm->lm_tuning.dmc_fe_vchan.num) {
++    int r;
++    pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
++    r = hdhomerun_device_set_tuner_filter(hfe->hf_hdhomerun_tuner, "0x0000");
++    pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
++    if(r < 1)
++      tvherror(LS_TVHDHOMERUN, "failed to reset pfilter: %d", r);
++  }
+ 
+   return res;
+ }

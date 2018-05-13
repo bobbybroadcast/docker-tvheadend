@@ -1,3 +1,23 @@
+This is a clone of LINUX|SERVER.IO's TVHeadend version 4.2 patched with [Robert Cameron's ATSC/CableCARD](https://tvheadend.org/boards/5/topics/32553?r=32726#message-32726)
+
+# Note: You must use "--net=host" if you're using something like HDHomeRun prime (due to multicast).
+
+Example Docker run cmd:
+
+```
+docker run \
+  --name=tvheadend \
+  --net=host \
+  -v <path to data>:/config \
+  -v <path to recordings>:/recordings \
+  -e PGID=<gid> -e PUID=<uid>  \
+  -p 9981:9981 \
+  -p 9982:9982 \
+  politimuse/tvheadend-atsc-patched:4.2
+```
+
+Type 'id' in a shell to get PUID, GUID - it should be whatever user docker is run as.
+
 [linuxserverurl]: https://linuxserver.io
 [forumurl]: https://forum.linuxserver.io
 [ircurl]: https://www.linuxserver.io/irc/

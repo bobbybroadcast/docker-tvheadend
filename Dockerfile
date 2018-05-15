@@ -146,7 +146,7 @@ RUN \
  rm -rf /usr/include/iconv.h && \
  cp /usr/include/gnu-libiconv/iconv.h /usr/include/iconv.h && \
  echo "**** build tvheadend ****" && \
- git clone https://github.com/tvheadend/tvheadend.git /tmp/tvheadend && \
+ git clone -b cablecard-4.3 https://github.com/rpcameron/tvheadend /tmp/tvheadend && \
  cd /tmp/tvheadend && \
  ./configure \
 	`#Encoding` \
@@ -239,7 +239,7 @@ RUN \
 COPY root/ /
 
 # add picons
-ADD picons.tar.bz2 /picons
+#ADD picons.tar.bz2 /picons
 
 # ports and volumes
 EXPOSE 9981 9982

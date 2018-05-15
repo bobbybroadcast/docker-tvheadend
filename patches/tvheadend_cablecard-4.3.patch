@@ -1,0 +1,549 @@
+diff --git a/src/input/mpegts/dvb.h b/src/input/mpegts/dvb.h
+index 317dff8df..db87594d4 100644
+--- a/src/input/mpegts/dvb.h
++++ b/src/input/mpegts/dvb.h
+@@ -421,6 +421,7 @@ typedef enum dvb_fe_type {
+   DVB_TYPE_S,			/* satellite */
+   DVB_TYPE_ATSC_T,		/* terrestrial - north america */
+   DVB_TYPE_ATSC_C,		/* cable - north america */
++  DVB_TYPE_CABLECARD, /* CableCARD - North America */
+   DVB_TYPE_ISDB_T,              /* terrestrial - japan, brazil */
+   DVB_TYPE_ISDB_C,              /* cable - japan, brazil */
+   DVB_TYPE_ISDB_S,              /* satellite - japan, brazil */
+@@ -615,6 +616,12 @@ typedef struct dvb_isdbt_config {
+   } layers[3];
+ } dvb_isdbt_config_t;
+ 
++typedef struct dvb_fe_vchan {
++  uint32_t  num;
++  uint16_t  minor;
++  char     *name;
++} dvb_fe_vchan_t;
++
+ typedef struct dvb_mux_conf
+ {
+   dvb_fe_type_t               dmc_fe_type;
+@@ -633,6 +640,7 @@ typedef struct dvb_mux_conf
+     dvb_ofdm_config_t         dmc_fe_ofdm;
+     dvb_isdbt_config_t        dmc_fe_isdbt;
+   } u;
++  dvb_fe_vchan_t              dmc_fe_vchan;
+ 
+   // For scan file configurations
+   LIST_ENTRY(dvb_mux_conf)    dmc_link;
+diff --git a/src/input/mpegts/dvb_support.c b/src/input/mpegts/dvb_support.c
+index ab646a375..7a90ae677 100644
+--- a/src/input/mpegts/dvb_support.c
++++ b/src/input/mpegts/dvb_support.c
+@@ -683,6 +683,7 @@ const static struct strtab delsystab[] = {
+   { "DVBC/ANNEX_A", DVB_SYS_DVBC_ANNEX_A },
+   { "DVBC_ANNEX_A", DVB_SYS_DVBC_ANNEX_A },
+   { "ATSC-C",       DVB_SYS_DVBC_ANNEX_B },
++  { "CableCARD",    DVB_SYS_DVBC_ANNEX_B },
+   { "DVBC/ANNEX_B", DVB_SYS_DVBC_ANNEX_B },
+   { "DVBC_ANNEX_B", DVB_SYS_DVBC_ANNEX_B },
+   { "DVB-C/ANNEX-C",DVB_SYS_DVBC_ANNEX_C },
+@@ -738,6 +739,8 @@ dvb_delsys2type ( mpegts_network_t *ln, dvb_fe_delivery_system_t delsys )
+     case DVB_SYS_DVBC_ANNEX_B:
+       if (ln && idnode_is_instance(&ln->mn_id, &dvb_network_dvbc_class))
+         return DVB_TYPE_C;
++      if (ln && idnode_is_instance(&ln->mn_id, &dvb_network_cablecard_class))
++        return DVB_TYPE_CABLECARD;
+       else
+         return DVB_TYPE_ATSC_C;
+     case DVB_SYS_ISDBT:
+@@ -946,24 +949,25 @@ const static struct strtab poltab[] = {
+ dvb_str2val(pol);
+ 
+ const static struct strtab typetab[] = {
+-  {"DVB-T",  DVB_TYPE_T},
+-  {"DVB-C",  DVB_TYPE_C},
+-  {"DVB-S",  DVB_TYPE_S},
+-  {"ATSC-T", DVB_TYPE_ATSC_T},
+-  {"ATSC-C", DVB_TYPE_ATSC_C},
+-  {"ISDB-T", DVB_TYPE_ISDB_T},
+-  {"ISDB-C", DVB_TYPE_ISDB_C},
+-  {"ISDB-S", DVB_TYPE_ISDB_S},
+-  {"DAB",    DVB_TYPE_DAB},
+-  {"DVBT",   DVB_TYPE_T},
+-  {"DVBC",   DVB_TYPE_C},
+-  {"DVBS",   DVB_TYPE_S},
+-  {"ATSC",   DVB_TYPE_ATSC_T},
+-  {"ATSCT",  DVB_TYPE_ATSC_T},
+-  {"ATSCC",  DVB_TYPE_ATSC_C},
+-  {"ISDBT",  DVB_TYPE_ISDB_T},
+-  {"ISDBC",  DVB_TYPE_ISDB_C},
+-  {"ISDBS",  DVB_TYPE_ISDB_S}
++  {"DVB-T",     DVB_TYPE_T},
++  {"DVB-C",     DVB_TYPE_C},
++  {"DVB-S",     DVB_TYPE_S},
++  {"ATSC-T",    DVB_TYPE_ATSC_T},
++  {"ATSC-C",    DVB_TYPE_ATSC_C},
++  {"CableCARD", DVB_TYPE_CABLECARD},
++  {"ISDB-T",    DVB_TYPE_ISDB_T},
++  {"ISDB-C",    DVB_TYPE_ISDB_C},
++  {"ISDB-S",    DVB_TYPE_ISDB_S},
++  {"DAB",       DVB_TYPE_DAB},
++  {"DVBT",      DVB_TYPE_T},
++  {"DVBC",      DVB_TYPE_C},
++  {"DVBS",      DVB_TYPE_S},
++  {"ATSC",      DVB_TYPE_ATSC_T},
++  {"ATSCT",     DVB_TYPE_ATSC_T},
++  {"ATSCC",     DVB_TYPE_ATSC_C},
++  {"ISDBT",     DVB_TYPE_ISDB_T},
++  {"ISDBC",     DVB_TYPE_ISDB_C},
++  {"ISDBS",     DVB_TYPE_ISDB_S}
+ };
+ dvb_str2val(type);
+ 
+@@ -1081,6 +1085,20 @@ dvb_mux_conf_str_atsc_t ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+            dvb_qam2str(dmc->dmc_fe_modulation));
+ }
+ 
++static int
++dvb_mux_conf_str_cablecard(dvb_mux_conf_t *dmc, char *buf, size_t bufsize)
++{
++  if (!dmc->dmc_fe_vchan.minor)
++    return snprintf(buf, bufsize, "%s channel %u",
++      dvb_type2str(dmc->dmc_fe_type),
++      dmc->dmc_fe_vchan.num);
++  else
++    return snprintf(buf, bufsize, "%s channel %u.%u",
++      dvb_type2str(dmc->dmc_fe_type),
++      dmc->dmc_fe_vchan.num,
++      dmc->dmc_fe_vchan.minor);
++}
++
+ static int
+ dvb_mux_conf_str_isdb_t ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+ {
+@@ -1124,6 +1142,8 @@ dvb_mux_conf_str ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
+     return dvb_mux_conf_str_dvbs(dmc, buf, bufsize);
+   case DVB_TYPE_ATSC_T:
+     return dvb_mux_conf_str_atsc_t(dmc, buf, bufsize);
++  case DVB_TYPE_CABLECARD:
++    return dvb_mux_conf_str_cablecard(dmc, buf, bufsize);
+   case DVB_TYPE_ISDB_T:
+     return dvb_mux_conf_str_isdb_t(dmc, buf, bufsize);
+   default:
+diff --git a/src/input/mpegts/mpegts_dvb.h b/src/input/mpegts/mpegts_dvb.h
+index 43e163453..87f5faf71 100644
+--- a/src/input/mpegts/mpegts_dvb.h
++++ b/src/input/mpegts/mpegts_dvb.h
+@@ -50,6 +50,7 @@ extern const idclass_t dvb_network_dvbc_class;
+ extern const idclass_t dvb_network_dvbs_class;
+ extern const idclass_t dvb_network_atsc_t_class;
+ extern const idclass_t dvb_network_atsc_c_class;
++extern const idclass_t dvb_network_cablecard_class;
+ extern const idclass_t dvb_network_isdb_t_class;
+ extern const idclass_t dvb_network_isdb_c_class;
+ extern const idclass_t dvb_network_isdb_s_class;
+@@ -88,6 +89,7 @@ extern const idclass_t dvb_mux_dvbc_class;
+ extern const idclass_t dvb_mux_dvbs_class;
+ extern const idclass_t dvb_mux_atsc_t_class;
+ extern const idclass_t dvb_mux_atsc_c_class;
++extern const idclass_t dvb_mux_cablecard_class;
+ extern const idclass_t dvb_mux_isdb_t_class;
+ extern const idclass_t dvb_mux_isdb_c_class;
+ extern const idclass_t dvb_mux_isdb_s_class;
+diff --git a/src/input/mpegts/mpegts_mux_dvb.c b/src/input/mpegts/mpegts_mux_dvb.c
+index 7228dcd1e..804e2adce 100644
+--- a/src/input/mpegts/mpegts_mux_dvb.c
++++ b/src/input/mpegts/mpegts_mux_dvb.c
+@@ -129,6 +129,39 @@ dvb_mux_class_delsys_set (void *o, const void *v)
+   return 0;
+ }
+ 
++static const void *
++dvb_mux_class_vchan_get(void *o)
++{
++  dvb_mux_t *lm = (dvb_mux_t *)o;
++
++  if (!lm->lm_tuning.dmc_fe_vchan.minor)
++    snprintf(prop_sbuf, PROP_SBUF_LEN, "%u",
++      lm->lm_tuning.dmc_fe_vchan.num);
++  else
++    snprintf(prop_sbuf, PROP_SBUF_LEN, "%u.%u",
++      lm->lm_tuning.dmc_fe_vchan.num,
++      lm->lm_tuning.dmc_fe_vchan.minor);
++	return &prop_sbuf_ptr;
++}
++
++static int
++dvb_mux_class_vchan_set(void *o, const void *v)
++{
++  dvb_mux_t *lm = (dvb_mux_t *)o;
++  int r;
++
++  r = sscanf(v, "%u%*[.-]%hu",
++    &lm->lm_tuning.dmc_fe_vchan.num,
++    &lm->lm_tuning.dmc_fe_vchan.minor);
++  switch (r) {
++  case 0:
++    return 1;
++  case 1:
++    lm->lm_tuning.dmc_fe_vchan.minor = 0;
++  }
++  return 0;
++}
++
+ const idclass_t dvb_mux_class =
+ {
+   .ic_super      = &mpegts_mux_class,
+@@ -614,6 +647,43 @@ const idclass_t dvb_mux_atsc_c_class =
+   }
+ };
+ 
++/*
++ * CableCARD
++ */
++const idclass_t dvb_mux_cablecard_class =
++{
++  .ic_super      = &dvb_mux_class,
++  .ic_class      = "dvb_mux_cablecard",
++  .ic_caption    = N_("CableCARD multiplex"),
++  .ic_properties = (const property_t[]){
++    {
++      .type = PT_STR,
++      .id   = "vchan",
++      .name = N_("Channel"),
++      .desc = N_("The channel on the cable provider's network."),
++      .get  = dvb_mux_class_vchan_get,
++      .set  = dvb_mux_class_vchan_set,
++    },
++    {
++      .type = PT_U32,
++      .id   = "frequency",
++      .name = N_("Frequency (Hz)"),
++      .desc = N_("The frequency of the mux (in Hertz)."),
++      .off  = offsetof(dvb_mux_t, lm_tuning.dmc_fe_freq),
++      .opts = PO_RDONLY,
++    },
++    {
++      .type = PT_STR,
++      .id   = "vchan_name",
++      .name = N_("Callsign"),
++      .desc = N_("The channel's name or callsign as set by the cable provider."),
++      .off  = offsetof(dvb_mux_t, lm_tuning.dmc_fe_vchan.name),
++      .opts = PO_RDONLY,
++    },
++    {}
++  }
++};
++
+ /*
+  * ISDB-T
+  */
+@@ -1049,26 +1119,36 @@ dvb_mux_display_name ( mpegts_mux_t *mm, char *buf, size_t len )
+   dvb_network_t *ln = (dvb_network_t*)mm->mm_network;
+   uint32_t freq = lm->lm_tuning.dmc_fe_freq, freq2;
+   char extra[8], buf2[5], *p;
+-  if (ln->ln_type == DVB_TYPE_S) {
+-    const char *s = dvb_pol2str(lm->lm_tuning.u.dmc_fe_qpsk.polarisation);
+-    if (s) extra[0] = *s;
+-    extra[1] = '\0';
++
++  if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_CABLECARD) {
++    if (!lm->lm_tuning.dmc_fe_vchan.minor)
++      snprintf(buf, len, "%u", lm->lm_tuning.dmc_fe_vchan.num);
++    else
++      snprintf(buf, len, "%u.%u",
++        lm->lm_tuning.dmc_fe_vchan.num,
++        lm->lm_tuning.dmc_fe_vchan.minor);
+   } else {
++    if (ln->ln_type == DVB_TYPE_S) {
++      const char *s = dvb_pol2str(lm->lm_tuning.u.dmc_fe_qpsk.polarisation);
++      if (s) extra[0] = *s;
++      extra[1] = '\0';
++    } else {
++      freq /= 1000;
++      strcpy(extra, "MHz");
++    }
++    freq2 = freq % 1000;
+     freq /= 1000;
+-    strcpy(extra, "MHz");
+-  }
+-  freq2 = freq % 1000;
+-  freq /= 1000;
+-  snprintf(buf2, sizeof(buf2), "%03d", freq2);
+-  p = buf2 + 2;
+-  while (freq2 && (freq2 % 10) == 0) {
+-    freq2 /= 10;
+-    *(p--) = '\0';
++    snprintf(buf2, sizeof(buf2), "%03d", freq2);
++    p = buf2 + 2;
++    while (freq2 && (freq2 % 10) == 0) {
++      freq2 /= 10;
++      *(p--) = '\0';
++    }
++    if (freq2)
++      snprintf(buf, len, "%d.%s%s", freq, buf2, extra);
++    else
++      snprintf(buf, len, "%d%s", freq, extra);
+   }
+-  if (freq2)
+-    snprintf(buf, len, "%d.%s%s", freq, buf2, extra);
+-  else
+-    snprintf(buf, len, "%d%s", freq, extra);
+ }
+ 
+ static void
+@@ -1122,6 +1202,9 @@ dvb_mux_create0
+   } else if (ln->ln_type == DVB_TYPE_ATSC_C) {
+     idc = &dvb_mux_atsc_c_class;
+     delsys = DVB_SYS_DVBC_ANNEX_B;
++  } else if (ln->ln_type == DVB_TYPE_CABLECARD) {
++    idc = &dvb_mux_cablecard_class;
++    delsys = DVB_SYS_DVBC_ANNEX_B;
+   } else if (ln->ln_type == DVB_TYPE_ISDB_T) {
+     idc = &dvb_mux_isdb_t_class;
+     delsys = DVB_SYS_ISDBT;
+diff --git a/src/input/mpegts/mpegts_network_dvb.c b/src/input/mpegts/mpegts_network_dvb.c
+index a4904f209..525f39fe2 100644
+--- a/src/input/mpegts/mpegts_network_dvb.c
++++ b/src/input/mpegts/mpegts_network_dvb.c
+@@ -360,6 +360,16 @@ const idclass_t dvb_network_atsc_c_class =
+   }
+ };
+ 
++const idclass_t dvb_network_cablecard_class =
++{
++  .ic_super      = &dvb_network_class,
++  .ic_class      = "dvb_network_cablecard",
++  .ic_caption    = N_("CableCARD Network"),
++  .ic_properties = (const property_t[]){
++    {}
++  }
++};
++
+ const idclass_t dvb_network_isdb_t_class =
+ {
+   .ic_super      = &dvb_network_class,
+@@ -632,6 +642,8 @@ dvb_network_mux_class
+     return &dvb_mux_atsc_c_class;
+   if (idnode_is_instance(&mn->mn_id, &dvb_network_isdb_t_class))
+     return &dvb_mux_isdb_t_class;
++  if (idnode_is_instance(&mn->mn_id, &dvb_network_cablecard_class))
++    return &dvb_mux_cablecard_class;
+   if (idnode_is_instance(&mn->mn_id, &dvb_network_isdb_c_class))
+     return &dvb_mux_isdb_c_class;
+   if (idnode_is_instance(&mn->mn_id, &dvb_network_isdb_s_class))
+@@ -830,7 +842,27 @@ static mpegts_service_t *
+ dvb_network_create_service
+   ( mpegts_mux_t *mm, uint16_t sid, uint16_t pmt_pid )
+ {
+-  return mpegts_service_create1(NULL, mm, sid, pmt_pid, NULL);
++  dvb_mux_t *lm = (dvb_mux_t *)mm;
++  mpegts_service_t *s;
++
++  s = mpegts_service_create1(NULL, mm, sid, pmt_pid, NULL);
++
++  /* Set service values from mux if CableCARD */
++  if (lm->lm_tuning.dmc_fe_type == DVB_TYPE_CABLECARD) {
++    mpegts_network_t *ln = mm->mm_network;
++    if (!s->s_dvb_provider && lm->mm_provider_network_name)
++      s->s_dvb_provider = strdup(lm->mm_provider_network_name);
++    if (!s->s_dvb_provider && ln->mn_provider_network_name)
++      s->s_dvb_provider = strdup(ln->mn_provider_network_name);
++    if (!s->s_dvb_channel_num)
++      s->s_dvb_channel_num = lm->lm_tuning.dmc_fe_vchan.num;
++    if (!s->s_dvb_channel_minor && lm->lm_tuning.dmc_fe_vchan.minor)
++      s->s_dvb_channel_minor = lm->lm_tuning.dmc_fe_vchan.minor;
++    if (!s->s_dvb_svcname && lm->lm_tuning.dmc_fe_vchan.name)
++      s->s_dvb_svcname = strdup(lm->lm_tuning.dmc_fe_vchan.name);
++  }
++
++  return s;
+ }
+ 
+ static mpegts_mux_t *
+@@ -910,6 +942,7 @@ static const idclass_t * dvb_network_classes[] = {
+   &dvb_network_dvbs_class,
+   &dvb_network_atsc_t_class,
+   &dvb_network_atsc_c_class,
++  &dvb_network_cablecard_class,
+   &dvb_network_isdb_t_class,
+   &dvb_network_isdb_c_class,
+   &dvb_network_isdb_s_class,
+@@ -924,6 +957,7 @@ static const idclass_t * dvb_mux_classes[] = {
+   &dvb_mux_dvbs_class,
+   &dvb_mux_atsc_t_class,
+   &dvb_mux_atsc_c_class,
++  &dvb_mux_cablecard_class,
+   &dvb_mux_isdb_t_class,
+   &dvb_mux_isdb_c_class,
+   &dvb_mux_isdb_s_class,
+@@ -1003,6 +1037,8 @@ const idclass_t *dvb_network_class_by_fe_type(dvb_fe_type_t type)
+     return &dvb_network_atsc_t_class;
+   else if (type == DVB_TYPE_ATSC_C)
+     return &dvb_network_atsc_c_class;
++  else if (type == DVB_TYPE_CABLECARD)
++    return &dvb_network_cablecard_class;
+   else if (type == DVB_TYPE_ISDB_T)
+     return &dvb_network_isdb_t_class;
+   else if (type == DVB_TYPE_ISDB_C)
+@@ -1029,6 +1065,8 @@ dvb_fe_type_t dvb_fe_type_by_network_class(const idclass_t *idc)
+     return DVB_TYPE_ATSC_T;
+   else if (idc == &dvb_network_atsc_c_class)
+     return DVB_TYPE_ATSC_C;
++  else if (idc == &dvb_network_cablecard_class)
++    return DVB_TYPE_CABLECARD;
+   else if (idc == &dvb_network_isdb_t_class)
+     return DVB_TYPE_ISDB_T;
+   else if (idc == &dvb_network_isdb_c_class)
+diff --git a/src/input/mpegts/tvhdhomerun/tvhdhomerun.c b/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
+index 228229c4b..edce21503 100644
+--- a/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
++++ b/src/input/mpegts/tvhdhomerun/tvhdhomerun.c
+@@ -117,6 +117,7 @@ tvhdhomerun_device_class_override_enum( void * p, const char *lang )
+   htsmsg_add_str(m, NULL, "DVB-C");
+   htsmsg_add_str(m, NULL, "ATSC-T");
+   htsmsg_add_str(m, NULL, "ATSC-C");
++  htsmsg_add_str(m, NULL, "CableCARD");
+   return m;
+ }
+ 
+@@ -318,13 +319,16 @@ static void tvhdhomerun_device_create(struct hdhomerun_discover_device_t *dInfo)
+         override_type = "ATSC-T";
+       type = dvb_str2type(override_type);
+       if ( ! ( type == DVB_TYPE_C || type == DVB_TYPE_T ||
+-               type == DVB_TYPE_ATSC_T || type == DVB_TYPE_ATSC_C ) ) {
++               type == DVB_TYPE_ATSC_T || type == DVB_TYPE_ATSC_C ||
++               type == DVB_TYPE_CABLECARD ) ) {
+         type = DVB_TYPE_C;
+       }
+     }
+   } else {
+     if (strstr(hd->hd_info.deviceModel, "_atsc"))
+       type = DVB_TYPE_ATSC_T;
++    if (strstr(hd->hd_info.deviceModel, "_cablecard"))
++      type = DVB_TYPE_CABLECARD;
+   }
+ 
+   hd->hd_override_type = strdup(dvb_type2str(type));
+@@ -455,6 +459,7 @@ void tvhdhomerun_init ( void )
+   idclass_register(&tvhdhomerun_frontend_dvbc_class);
+   idclass_register(&tvhdhomerun_frontend_atsc_t_class);
+   idclass_register(&tvhdhomerun_frontend_atsc_c_class);
++  idclass_register(&tvhdhomerun_frontend_cablecard_class);
+   TAILQ_INIT(&tvhdhomerun_discoveries);
+   pthread_mutex_init(&tvhdhomerun_discovery_lock, NULL);
+   tvh_cond_init(&tvhdhomerun_discovery_cond);
+diff --git a/src/input/mpegts/tvhdhomerun/tvhdhomerun.h b/src/input/mpegts/tvhdhomerun/tvhdhomerun.h
+index bbec1bcfc..80cd130e2 100644
+--- a/src/input/mpegts/tvhdhomerun/tvhdhomerun.h
++++ b/src/input/mpegts/tvhdhomerun/tvhdhomerun.h
+@@ -25,6 +25,7 @@ extern const idclass_t tvhdhomerun_frontend_dvbt_class;
+ extern const idclass_t tvhdhomerun_frontend_dvbc_class;
+ extern const idclass_t tvhdhomerun_frontend_atsc_t_class;
+ extern const idclass_t tvhdhomerun_frontend_atsc_c_class;
++extern const idclass_t tvhdhomerun_frontend_cablecard_class;
+ 
+ void tvhdhomerun_init( void );
+ void tvhdhomerun_done( void );
+diff --git a/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c b/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
+index e9e4ba3f6..362eb327d 100644
+--- a/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
++++ b/src/input/mpegts/tvhdhomerun/tvhdhomerun_frontend.c
+@@ -257,6 +257,19 @@ tvhdhomerun_frontend_monitor_cb( void *aux )
+       tvhdebug(LS_TVHDHOMERUN, "locked");
+       hfe->hf_locked = 1;
+ 
++      /* Get CableCARD variables */
++      dvb_mux_t *lm = (dvb_mux_t *)mm;
++      struct hdhomerun_tuner_vstatus_t tuner_vstatus;
++      char *tuner_vstatus_str;
++      pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
++      res = hdhomerun_device_get_tuner_vstatus(hfe->hf_hdhomerun_tuner,
++        &tuner_vstatus_str, &tuner_vstatus);
++      pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
++      if (res < 1)
++        tvhwarn(LS_TVHDHOMERUN, "tuner_vstatus (%d)", res);
++      lm->lm_tuning.dmc_fe_vchan.name = strdup(tuner_vstatus.name);
++      sscanf(strstr(tuner_status.channel, ":"), ":%u", &lm->lm_tuning.dmc_fe_freq);
++
+       /* start input thread */
+       tvh_pipe(O_NONBLOCK, &hfe->hf_input_thread_pipe);
+       pthread_mutex_lock(&hfe->hf_input_thread_mutex);
+@@ -312,6 +325,9 @@ static void tvhdhomerun_device_open_pid(tvhdhomerun_frontend_t *hfe, int pid) {
+   char buf[1024];
+   int res;
+ 
++  if (hfe->hf_type == DVB_TYPE_CABLECARD)
++    return;
++
+   /* a full mux subscription should specificly set the filter */
+   if (pid == MPEGTS_FULLMUX_PID) {
+     tvhdebug(LS_TVHDHOMERUN, "setting PID filter full mux");
+@@ -417,6 +433,14 @@ static int tvhdhomerun_frontend_tune(tvhdhomerun_frontend_t *hfe, mpegts_mux_ins
+             break;
+       }
+       break;
++    case DVB_TYPE_CABLECARD:
++      if (!dmc->dmc_fe_vchan.minor)
++        snprintf(channel_buf, sizeof(channel_buf), "%u", dmc->dmc_fe_vchan.num);
++      else
++        snprintf(channel_buf, sizeof(channel_buf), "%u.%u",
++          dmc->dmc_fe_vchan.num,
++          dmc->dmc_fe_vchan.minor);
++      break;
+     default:
+       snprintf(channel_buf, sizeof(channel_buf), "auto:%u", dmc->dmc_fe_freq);
+       break;
+@@ -431,7 +455,10 @@ static int tvhdhomerun_frontend_tune(tvhdhomerun_frontend_t *hfe, mpegts_mux_ins
+     tvherror(LS_TVHDHOMERUN, "failed to acquire lockkey: %s", perror);
+     return SM_CODE_TUNING_FAILED;
+   }
+-  res = hdhomerun_device_set_tuner_channel(hfe->hf_hdhomerun_tuner, channel_buf);
++  if (hfe->hf_type == DVB_TYPE_CABLECARD)
++    res = hdhomerun_device_set_tuner_vchannel(hfe->hf_hdhomerun_tuner, channel_buf);
++  else
++    res = hdhomerun_device_set_tuner_channel(hfe->hf_hdhomerun_tuner, channel_buf);
+   pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
+   if(res < 1) {
+     tvherror(LS_TVHDHOMERUN, "failed to tune to %s", channel_buf);
+@@ -463,11 +490,13 @@ tvhdhomerun_frontend_start_mux
+   res = tvhdhomerun_frontend_tune(hfe, mmi);
+ 
+   /* reset the pfilters */
+-  pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
+-  r = hdhomerun_device_set_tuner_filter(hfe->hf_hdhomerun_tuner, "0x0000");
+-  pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
+-  if(r < 1)
+-    tvherror(LS_TVHDHOMERUN, "failed to reset pfilter: %d", r);
++  if (hfe->hf_type != DVB_TYPE_CABLECARD) {
++    pthread_mutex_lock(&hfe->hf_hdhomerun_device_mutex);
++    r = hdhomerun_device_set_tuner_filter(hfe->hf_hdhomerun_tuner, "0x0000");
++    pthread_mutex_unlock(&hfe->hf_hdhomerun_device_mutex);
++    if(r < 1)
++      tvherror(LS_TVHDHOMERUN, "failed to reset pfilter: %d", r);
++  }
+ 
+   return res;
+ }
+@@ -620,6 +649,16 @@ const idclass_t tvhdhomerun_frontend_atsc_c_class =
+   }
+ };
+ 
++const idclass_t tvhdhomerun_frontend_cablecard_class =
++{
++  .ic_super = &tvhdhomerun_frontend_class,
++  .ic_class = "tvhdhomerun_frontend_cablecard",
++  .ic_caption = N_("HDHomeRun CableCARD frontend"),
++  .ic_properties = (const property_t[]){
++    {}
++  }
++};
++
+ static mpegts_network_t *
+ tvhdhomerun_frontend_wizard_network ( tvhdhomerun_frontend_t *hfe )
+ {
+@@ -708,6 +747,8 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
+     idc = &tvhdhomerun_frontend_atsc_t_class;
+   else if (type == DVB_TYPE_ATSC_C)
+     idc = &tvhdhomerun_frontend_atsc_c_class;
++  else if (type == DVB_TYPE_CABLECARD)
++    idc = &tvhdhomerun_frontend_cablecard_class;
+   else {
+     tvherror(LS_TVHDHOMERUN, "unknown FE type %d", type);
+     return NULL;

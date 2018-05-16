@@ -14,7 +14,7 @@ docker run \
   -e PGID=<gid> -e PUID=<uid>  \
   -p 9981:9981 \
   -p 9982:9982 \
-  politimuse/tvheadend-atsc-patched:4.2
+  politimuse/tvheadend-cablecard-patched
 ```
 
 Type 'id' in a shell to get PUID, GUID - it should be whatever user docker is run as.
